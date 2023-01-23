@@ -25,11 +25,9 @@
 #    along with chipwhisperer.  If not, see <http://www.gnu.org/licenses/>.
 #=================================================
 from ....logging import *
-import zipfile
-import datetime
-import math
+import zipfile, datetime, math, time
 from ....capture.scopes.cwhardware import PartialReconfiguration as pr
-from ....common.utils import util
+from ....common.utils import util, consts
 
 powerdownaddr = 49
 glitchrepeats = 50
@@ -50,22 +48,21 @@ def SIGNEXT(x, b):
     return (x ^ m) - m
 
 class GlitchSettings(util.DisableNewAttr):
-
     # Output modes, sorted by ID (FPGA value)
     _output_modes = [
-        "clock_xor",
-        "clock_or",
-        "glitch_only",
-        "clock_only",
-        "enable_only"
+        consts.GLITCH_OUTPUT_CLK_XOR,
+        consts.GLITCH_OUTPUT_CLK_OR,
+        consts.GLITCH_OUTPUT_GLITCH,
+        consts.GLITCH_OUTPUT_CLOCK,
+        consts.GLITCH_OUTPUT_ENABLE
     ]
 
     # Trigger types
     _glitch_triggers = [
-        "manual",
-        "ext_continuous",
-        "continuous",
-        "ext_single"
+        consts.GLITCH_TRIGGER_MANUAL,
+        consts.GLITCH_TRIGGER_EXT_CONT,
+        consts.GLITCH_TRIGGER_CONTINUOUS,
+        consts.GLITCH_TRIGGER_EXT1
     ]
 
     def __init__(self, cwglitch):
@@ -619,6 +616,11 @@ class GlitchSettings(util.DisableNewAttr):
         except ValueError as e:
             raise ValueError("Can't set glitch mode to %s; valid values: %s" % (value, self._output_modes), value) from e
         self.cwg.setGlitchType(output_idx)
+
+    def enable_and_src_pll(self):
+        self.enabled = True
+        time.sleep(0.1)
+        self.clk_src = consts.GLITCH_CLKSRC_PLL
 
 class ChipWhispererGlitch(object):
     """

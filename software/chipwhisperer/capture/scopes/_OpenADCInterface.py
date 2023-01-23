@@ -10,7 +10,7 @@ import logging
 import sys
 import time
 import datetime
-from ...common.utils import util
+from ...common.utils import util, consts
 import array
 import numpy as np
 from collections import OrderedDict
@@ -183,138 +183,207 @@ class OpenADCInterface(util.DisableNewAttr):
 
             scope_logger.error('%d errors in %d' % (totalerror, totalbytes))
 
-    def sendMessage(self, mode, address, payload=None, Validate=False, maxResp=None, readMask=None):
-        """Send a message out the serial port"""
+    @property
+    def _serial_not_stream(self):
+        """Gets a value indicating if the serial instance is not in streaming mode.
 
-        if payload is None:
-            payload = []
+        Return:
+            False if a generic serial interface with no stream attribute or if explicitly in stream
+        mode, else True if serial is explicitly not in stream mode.
+        """
+        return hasattr(self.serial, "stream") and self.serial.stream is False
 
-        #Get length
-        length = len(payload)
+    def _send_msg_hdr(self, mode, addr, datalen):
+        """Sends a serial command header to the device.
+        """
+        buf = bytearray(3)
+        buf[0] = mode | addr
+        buf[1] = val & 0xff
+        buf[2] = (val >> 8) & 0xff
+        self.serial.write(buf)
 
-        if ((mode == CODE_WRITE) and (length < 1)) or ((mode == CODE_READ) and (length != 0)):
+    def msg_write(self, address, payload):
+        """Sends a command message to the device.
+        """
+        datalen = len(payload)
+        if datalen < 1:
             scope_logger.warning('Invalid payload for mode')
-            return None
+            return
 
-        if mode == CODE_READ:
-            self.flushInput()
-
-        #Flip payload around
-        pba = bytearray(payload)
-
-        #Check if stream or newaechip mode expected
-        if hasattr(self.serial, "stream") and self.serial.stream is False:
-            #The serial interface is actually special USB Chip
-            if mode == CODE_READ:
-                if maxResp:
-                    datalen = maxResp
-                elif ADDR_ADCDATA == address:
-                    datalen = 65000
-                else:
-                    datalen = 1
-
-                if self._fast_fifo_read_active and address != ADDR_ADCDATA:
-                    scope_logger.warning("Internal error: in fast read mode but not reading FIFO! (address=%0d, datalen=%0d)." % (address, datalen))
-                    scope_logger.warning("This happens when attempting to access (read or write) some Husky FPGA setting after the")
-                    scope_logger.warning("ADC sample FIFO read has been set up; in stream mode, this is done when scope.arm() is called.")
-                    scope_logger.warning("If this happens to you as a user: access scope.* settings before calling scope.arm(), not after.")
-                    scope_logger.warning("If this happens to you as a developer, you can resolve this by caching the setting you need.")
-                    scope_logger.warning("The error trace below will show you what led to this:")
-                    raise ValueError
-
-                return bytearray(self.serial.cmdReadMem(address, datalen))
-
-            else:
-                # Write output to memory
-                self.serial.cmdWriteMem(address, pba)
-
-                # Check write was successful if validation requested
-                if Validate:
-                    check =  bytearray(self.serial.cmdReadMem(address, len(pba)))
-
-                    if readMask:
-                        try:
-                            for i, m in enumerate(readMask):
-                                check[i] = check[i] & m
-                                pba[i] = pba[i] & m
-                        except IndexError:
-                            pass
-
-                    if check != pba:
-                        errmsg = "For address 0x%02x=%d" % (address, address)
-                        errmsg += "  Sent data: "
-                        for c in pba: errmsg += "%02x" % c
-                        errmsg += " Read data: "
-                        if check:
-                            for c in check: errmsg += "%02x" % c
-                        else:
-                            errmsg += "<Timeout>"
-
-                        scope_logger.error(errmsg)
+        if self._serial_not_stream:
+            # Write output to memory
+            self.serial.cmdWriteMem(address, payload)
         else:
-            # ## Setup Message
-            message = bytearray([])
+            self._send_msg_hdr(CODE_WRITE, address, datalen)
+            self.serial.write(payload)
 
-            # Message type
-            message.append(mode | address)
+    def msg_read(self, address, max_resp=None):
+        """Reads the response from the device after issuing a command to it.
 
-            # Length
-            lenpayload = len(pba)
-            message.append(lenpayload & 0xff)
-            message.append((lenpayload >> 8) & 0xff)
-
-            # append payload
-            message = message + pba
-
-            # ## Send out serial port
-            self.serial.write(message)
-
-            # for b in message: print "%02x "%b,
-            # print ""
-
-            # ## Wait Response (if requested)
-            if mode == CODE_READ:
-                if maxResp:
-                    datalen = maxResp
-                elif ADDR_ADCDATA == address:
-                    datalen = 65000
-                else:
-                    datalen = 1
-
-                result = self.serial.read(datalen)
-
-                # Check for timeout, if so abort
-                if len(result) < 1:
-                    self.flushInput()
-                    scope_logger.warning('Timeout in read: %d (address: 0x%02x)' % (len(result), address))
-                    return None
-
-                rb = bytearray(result)
-
-                return rb
+        Return:
+            A bytearray of the response received from the device.
+        """
+        if not max_resp:
+            if ADDR_ADCDATA == address:
+                max_resp = 65000
             else:
-                if Validate:
-                    check = self.sendMessage(CODE_READ, address, maxResp=len(pba))
+                max_resp = 1
 
-                    if readMask:
-                        try:
-                            for i, m in enumerate(readMask):
-                                check[i] = check[i] & m
-                                pba[i] = pba[i] & m
-                        except IndexError:
-                            pass
+        self.flushInput()
 
-                    if check != pba:
-                        errmsg = "For address 0x%02x=%d" % (address, address)
-                        errmsg += "  Sent data: "
-                        for c in pba: errmsg += "%02x" % c
-                        errmsg += " Read data: "
-                        if check:
-                            for c in check: errmsg += "%02x" % c
-                        else:
-                            errmsg += "<Timeout>"
+        if self._serial_not_stream:
+            if self._fast_fifo_read_active and address != ADDR_ADCDATA:
+                scope_logger.warning("Internal error: in fast read mode but not reading FIFO! (address=%0d, datalen=%0d)." % (address, datalen))
+                scope_logger.warning("This happens when attempting to access (read or write) some Husky FPGA setting after the")
+                scope_logger.warning("ADC sample FIFO read has been set up; in stream mode, this is done when scope.arm() is called.")
+                scope_logger.warning("If this happens to you as a user: access scope.* settings before calling scope.arm(), not after.")
+                scope_logger.warning("If this happens to you as a developer, you can resolve this by caching the setting you need.")
+                scope_logger.warning("The error trace below will show you what led to this:")
+                raise ValueError
 
-                        scope_logger.error(errmsg)
+            data = self.serial.cmdReadMem(address, max_resp)
+        else:
+            self._send_msg_hdr(CODE_READ, address, 0)
+            data = self.serial.read(max_resp)
+
+            if len(data) < 1:
+                self.flushInput()
+                scope_logger.warning('Timeout in read: %d (address: 0x%02x)' % (len(data), address))
+                return None
+
+        return bytearray(data)
+
+    def msg_validate(self, address, data, read_mask=None):
+        """Validates that a previous write was successful by reading from the same address and
+        comparing the payload to the provided expected data.
+        """
+        check = self.msg_read(address, datalen)
+
+        if read_mask:
+            try:
+                for i, m in enumerate(read_mask):
+                    check[i] = check[i] & m
+                    pba[i] = pba[i] & m
+            except IndexError:
+                pass
+
+        if check == payload:
+            return
+
+        errmsg = "For address 0x%02x=%d" % (address, address)
+        errmsg += "  Sent data: "
+        for c in pba: errmsg += "%02x" % c
+        errmsg += " Read data: "
+        if check:
+            for c in check: errmsg += "%02x" % c
+        else:
+            errmsg += "<Timeout>"
+
+        scope_logger.error(errmsg)
+
+    def sendMessage(self, mode, address, payload=None, Validate=False, maxResp=None, readMask=None):
+        """Top level swiss-army knife method for sending a message.  Kept for back-compat
+
+        TODO: Remove this function...
+        """
+        if mode != CODE_WRITE:
+            return self.msg_read(address, maxResp)
+        self.msg_write(address, payload)
+        if Validate:
+            self.msg_validate(address, payload, read_mask=readMask)
+
+    def msg_get_value(self, address, i, max_resp=None):
+        """Gets a byte from the message response from the device.
+
+        Return:
+            The value of the specified byte.
+        """
+        return self.msg_read(address, max_resp=max_resp)[i]
+
+    def msg_set_value(self, address, i, value, max_resp=None):
+        """Reads a response from the device, updates a byte in the response, and writes the
+        response back.
+
+        Return:
+            The updated data that was written to the device.
+        """
+        data = self.msg_read(address, max_resp=max_resp)
+        data[i] = value
+        self.msg_write(address, data)
+        return data
+
+    def msg_get_mask(self, address, i, mask, max_resp=None):
+        """Gets a byte from the message response and bitwise AND's a mask to it.
+
+        Return:
+            The masked value of the specified byte.
+        """
+        return self.msg_get_value(address, i, max_resp=max_resp) & mask
+
+    def msg_test_mask(self, address, i, mask, max_resp=None):
+        """Gets a masked byte from the message response and converts it to a bool.
+
+        Return:
+            False if the result was 0, else True.
+        """
+        return bool(self.msg_get_mask(address, i, mask, max_resp=max_resp))
+
+    def msg_set_mask(self, address, i, mask, max_resp=None):
+        """Reads a response from the device, bitwise OR's a mask into a byte, and writes the
+        response back to the device.
+
+        Return:
+            The updated data that was written back to the device.
+        """
+        data = self.msg_read(address, max_resp=max_resp)
+        data[i] |= mask
+        self.msg_write(address, data)
+        return data
+
+    def msg_clr_mask(self, address, i, mask, max_resp=None):
+        """Reads a response from the device, bitwise NAND's a mask to a byte, and writes the
+        response back to the device.
+
+        Return:
+            The updated data that was written back to the device.
+        """
+        data = self.msg_read(address, max_resp=max_resp)
+        data[i] &= ~mask
+        self.msg_write(address, data)
+        return data
+
+    def msg_upd_mask(self, address, i, mask, set, max_resp=None):
+        """Reads a response from the device, conditionally bitwise OR's or NAND's a mask into a
+        byte, and writes the response back to the device.
+
+        Return:
+            The updated data that was written back to the device.
+        """
+        if set:
+            return self.msg_set_mask(i, mask)
+        else:
+            return self.msg_clr_mask(i, mask)
+
+    def msg_and_set_enum(self, address, i, clr_mask, value, max_resp=None):
+        """Reads a response from the device, bitwise AND's a mask and bitwise OR's a value to a
+        byte, and writes the response back to the device.
+
+        Return:
+            The updated data that was written back to the device.
+        """
+        data = self.msg_read(address, max_resp=max_resp)
+        data[i] = (data[i] & clr_mask) | value
+        self.msg_write(address, data)
+        return data
+
+    def msg_nand_set_enum(self, address, i, val_mask, value, max_resp=None):
+        """Reads a response from the device, bitwise NAND's a mask and bitwise OR's a value to a
+        byte, and writes the response back to the device.
+
+        Return:
+            The updated data that was written back to the device.
+        """
+        return self.msg_and_set_enum(address, i, ~val_mask, value, max_resp=max_resp)
 
 ### Generic
     def fpga_write(self, address, data):
@@ -1537,7 +1606,9 @@ class TriggerSettings(util.DisableNewAttr):
     def lo_gain_errors_disabled(self, disable):
         self.oa.set_lo_gain_errors_disabled(disable)
 
-
+    def set_errors_disabled(self, disable):
+        self.lo_gain_errors_disabled = disable
+        self.clip_errors_disabled = disable
 
     @property
     def samples(self):
@@ -2691,6 +2762,21 @@ class ClockSettings(util.DisableNewAttr):
         :Getter: Return whether the CLKGEN DCM is locked (True or False)
         """
         return self._getClkgenLocked()
+
+    def try_wait_clkgen_locked(self, count, delay=0):
+        """Tries to wait for clkgen to lock.
+
+        Return:
+            True if clkgen locked within the timeout, else False for a timeout.
+        """
+        while not self.clkgen_locked:
+            if count <= 0:
+                return False
+            self.reset_dcms()
+            count -= 1
+            if delay:
+                time.sleep(delay)
+        return True
 
     def _set_freqcounter_src(self, src):
         result = self.oa.sendMessage(CODE_READ, ADDR_ADVCLK, maxResp=4)

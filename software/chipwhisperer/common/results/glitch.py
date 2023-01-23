@@ -2,11 +2,17 @@
 
 # GlitchController will be part of ChipWhisperer core - just run this block
 # for now.
+import random
 
 try:
     import ipywidgets as widgets # type: ignore
 except ModuleNotFoundError:
     widgets = None
+
+
+def apply_ticks(value, ticks, round):
+    value = float(value) * ticks
+    return int(round(value))
 
 class GlitchController:
     
@@ -55,6 +61,30 @@ class GlitchController:
                 self.widget_list_parameter[i].min = low
                 self.widget_list_parameter[i].max = high
     
+    def set_extoff_range(self, count, **args):
+        start = args.get('start', 0)
+        cycles = args.get('pipeline_cycles', 3)
+        tolerance = args.get('tolerance', 0)
+        clkgen_ticks = args.get('clkgen_per_target_tick', 1) # Per target clock
+        
+        # Calculate window max
+        count = start + (count * cycles) + tolerance
+        
+        # Calculate window min
+        if start > tolerance:
+            start -= tolerance
+        else:
+            start = 0
+        
+        # Apply clkgen ratio
+        if clkgen_ticks != 1:
+            clkgen_ticks = float(clkgen_ticks)
+            start = apply_ticks(start, clkgen_ticks, math.floor)
+            count = apply_ticks(count, clkgen_ticks, math.ceil)
+
+        name = args.get('extoff_param_name', 'ext_offset')
+        self.set_range(name, start, count)
+
     def set_step(self, parameter, step):
         '''Set a step for a single parameter
 
@@ -101,6 +131,12 @@ class GlitchController:
                 self.steps[i] = [steps]
         self._num_steps = len(self.steps[0])
 
+    def get_count(self, group):
+        i = self.groups.index(group)
+        return self.group_counts[i]
+
+    def param_index(self, param):
+        return self.parameters.index(param)
     
     def add(self, group, parameters=None, strdesc=None, metadata=None, plot=True):
         if parameters is None:
@@ -110,7 +146,8 @@ class GlitchController:
         i = self.groups.index(group)        
         #Basic count
         self.group_counts[i] += 1
-        self.widget_list_groups[i].value =  self.group_counts[i]
+        if not self.widget_list_groups is None:
+            self.widget_list_groups[i].value =  self.group_counts[i]
 
         if plot and self._buffers:
             self.update_plot(parameters[self._x_index], parameters[self._y_index], group)
@@ -197,37 +234,93 @@ class GlitchController:
 
         return self.results.plot_2d(plotdots, x_index, y_index, *args, **kwargs)
 
-       
+    @property
+    def param_count(self):
+        return len(self.parameters)
+
+    @property
+    def iparam_end(self):
+        return self.param_count - 1
+
+    def create_iteration_counts(self):
+        """Creates a tuple of iteration counts of (max - min)/step for each parameter.
+
+        Return:
+            The tuple of parameter iteration counts.
+        """
+        set_counts = [ None ] * self.param_count
+        for i in range(self.param_count):
+            steps = self.steps[i]
+            param_counts = [ None ] * len(steps)
+            for j in range(len(steps)):
+                param_counts[j] = int((self.parameter_max[i] - self.parameter_min[i]) / steps[j])
+            set_counts[i] = tuple(param_counts)
+        return tuple(set_counts)
+
+    def _set_param_val(self, i, val):
+        if self.widget_list_parameter:
+            self.widget_list_parameter[i].value = val
+        self.parameter_values[i] = val
+
+    def _rst_param_val(self, i):
+        self._set_param_val(i, self.parameter_min[i])
         
-    def glitch_values(self, clear=True):
-        """Generator returning the given parameter values in order, using the step size (or step list)"""
-        
-        self.parameter_values = self.parameter_min[:]
-        
+    def _glitch_val_init(self, clear):
         if clear:
             self.clear()
-        
-        #transpose steps so that all parameters' steps get passed to loop_rec instead of just one
-        steps = list(map(list, zip(*self.steps)))
 
-        for stepsize in steps:
-            for val in self._loop_rec(0, len(self.parameter_values)-1, stepsize):
-                if self.widget_list_parameter:
-                    for i,v in enumerate(val):
-                        self.widget_list_parameter[i].value = v
-                yield val
-        
-    def _loop_rec(self, parameter_index, final_index, step):
-        self.parameter_values[parameter_index] = self.parameter_min[parameter_index]
-        if parameter_index == final_index:            
-            while self.parameter_values[parameter_index] <= self.parameter_max[parameter_index]:                                
+        self.parameter_values = self.parameter_min[:]
+
+    def glitch_values(self, clear=True):
+        """Generator returning the given parameter values in order, using the step size (or step list)"""
+
+        self._glitch_val_init(clear)
+        step_idx = [0] * self.param_count
+
+        for i in range(self.param_count):
+            self._rst_param_val(i)
+
+        valid = True
+        i = self.iparam_end
+        while i >= 0:
+            if valid:
                 yield self.parameter_values
-                self.parameter_values[parameter_index] += step[parameter_index]
-        else:
-            while self.parameter_values[parameter_index] <= self.parameter_max[parameter_index]: 
-                yield from self._loop_rec(parameter_index+1, final_index, step)
-                self.parameter_values[parameter_index] += step[parameter_index]
-                
+            
+            steps = self.steps[i]
+            j = step_idx[i]
+            if j < len(steps):
+                val = self.parameter_values[i]
+                val += steps[j]
+                if val <= self.parameter_max[i]:
+                    self._set_param_val(i, val)
+                    valid = True
+                    i = self.iparam_end
+                else:
+                    self._rst_param_val(i)
+                    valid = False
+                    step_idx[i] = j + 1
+            else:
+                self._rst_param_val(i)
+                valid = False
+                step_idx[i] = 0
+                i -= 1
+
+    def rand_glitch_values(self, clear=True, randgen=random.randrange):
+        """Generator continuously generating random values of parameters divisible by their steps and within their min-max range
+        """
+
+        self._glitch_val_init(clear)
+        counts = self.create_iteration_counts()
+
+        while True:
+            for i in range(self.param_count):
+                j = 0
+                param_steps = counts[i]
+                if len(param_steps) > 1:
+                    j = randgen(len(param_steps))
+                val = self.parameter_min[i] + (self.steps[i][j] * randgen(param_steps[j]))
+                self._set_param_val(i, val)
+            yield self.parameter_values
 
 class GlitchResults:
     """GlitchResults tracks and plots fault injection attempts.

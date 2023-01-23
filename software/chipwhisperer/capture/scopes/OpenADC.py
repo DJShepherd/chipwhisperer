@@ -29,7 +29,7 @@ except Exception as e:
 
 from .cwhardware.ChipWhispererSAM3Update import SAMFWLoader
 from .openadc_interface.naeusbchip import OpenADCInterface_NAEUSBChip
-from ...common.utils import util
+from ...common.utils import util, consts
 from ...common.utils.util import dict_to_str, DelayedKeyboardInterrupt
 import time
 import numpy as np
@@ -51,6 +51,8 @@ ADDR_LA_DRP_RESET      = 74
 
 CODE_READ              = 0x80
 CODE_WRITE             = 0xC0
+
+# TODO: Cache device state/configs
 
 class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
 
@@ -207,14 +209,28 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
     def glitch_disable(self):
         """Disables glitch and glitch outputs
         """
+        # Help extend mosfet lifespan and clear first
+        self.io.vglitch_disable()
+
         if self._is_husky:
             self.glitch.enabled = False
-            self.adc.lo_gain_errors_disabled = False
-            self.adc.clip_errors_disabled = False
+            self.adc.set_errors_disabled(False)
 
-        self.io.glitch_lp = False
-        self.io.glitch_hp = False
-        self.io.hs2 = "clkgen"
+        self.io.hs2 = consts.HS2_SRC_CLKGEN
+
+    def _glitch_default(self, glitch_output):
+        """Sets all the default glitch settings.
+        """
+        if self._is_husky:
+            self.adc.set_errors_disabled(True)
+        else:
+            self.glitch.clk_src = consts.GLITCH_CLKSRC_CLKGEN
+
+        self.glitch.output = glitch_output
+        self.glitch.trigger_src = consts.GLITCH_TRIGGER_EXT1
+
+        if self._is_husky:
+            self.glitch.enable_and_src_pll()
 
     def cglitch_setup(self, default_setup=True):
         """Sets up sane defaults for clock glitching
@@ -228,22 +244,9 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
         if default_setup:
             self.default_setup()
 
-        if self._is_husky:
-            self.adc.lo_gain_errors_disabled = True
-            self.adc.clip_errors_disabled = True
-            self.glitch.enabled = True
-            time.sleep(0.1)
-            self.glitch.clk_src = "pll"
-        else:
-            self.glitch.clk_src = "clkgen"
-
-        self.io.glitch_lp = False
-        self.io.glitch_hp = False
-
-        self.glitch.output = "clock_xor"
-        self.glitch.trigger_src = "ext_single"
-
-        self.io.hs2 = "glitch"
+        self.io.vglitch_disable()
+        self._glitch_default(consts.GLITCH_OUTPUT_CLK_XOR)
+        self.io.hs2 = consts.HS2_SRC_GLITCH
 
     def vglitch_setup(self, glitcht, default_setup=True):
         """Sets up sane defaults for voltage glitch
@@ -258,32 +261,30 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
         if default_setup:
             self.default_setup()
 
+        self.io.hs2 = consts.HS2_SRC_CLKGEN
+        self._glitch_default(consts.GLITCH_OUTPUT_GLITCH)
+        self.io.vglitch_vset_mode(glitcht)
+
+    def _default_setup(self):
+        """Sets all the default hardware configuration settings.
+        """
+        self.gain.db = 25
+        self.adc.samples = 5000
+        self.adc.offset = 0
+        self.adc.basic_mode = consts.BASIC_MODE_RISE
+        self.clock.clkgen_freq = 7.37e6
+        self.trigger.triggers = consts.GPIO_NAME_TIO4
+        self.io.tio1 = consts.TIO_MODE_SERIAL_RX
+        self.io.tio2 = consts.TIO_MODE_SERIAL_TX
+        self.io.tio4 = consts.TIO_MODE_HIGHZ
+        self.io.hs2 = consts.HS2_SRC_CLKGEN
+
         if self._is_husky:
-            self.adc.lo_gain_errors_disabled = True
-            self.adc.clip_errors_disabled = True
-            self.glitch.enabled = True
-            time.sleep(0.1)
-            self.glitch.clk_src = "pll"
+            self.clock.clkgen_src = consts.CLKGEN_SRC_SYSTEM
+            self.clock.clkgen_freq = 7.37e6
+            self.clock.adc_mul = 4
         else:
-            self.glitch.clk_src = "clkgen"
-        
-        self.io.hs2 = "clkgen"
-        if glitcht == "lp":
-            self.io.glitch_lp = True
-            self.io.glitch_hp = False
-        elif glitcht == "hp":
-            self.io.glitch_lp = False
-            self.io.glitch_hp = True
-        elif glitcht == "both":
-            self.io.glitch_lp = True
-            self.io.glitch_hp = True
-        else:
-            raise ValueError("Invalid glitch transistor {} must be 'hp' or 'lp'".format(glitcht))
-
-        self.glitch.output = "glitch_only"
-        self.glitch.trigger_src = "ext_single"
-
-        self.io.hs2 = "clkgen"
+            self.clock.adc_src = consts.ADC_SRC_CLKGEN_X4
 
     def default_setup(self):
         """Sets up sane capture defaults for this scope
@@ -301,28 +302,14 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
         .. versionadded:: 5.1
             Added default setup for OpenADC
         """
-        self.gain.db = 25
-        self.adc.samples = 5000
-        self.adc.offset = 0
-        self.adc.basic_mode = "rising_edge"
-        self.clock.clkgen_freq = 7.37e6
-        self.trigger.triggers = "tio4"
-        self.io.tio1 = "serial_rx"
-        self.io.tio2 = "serial_tx"
-        self.io.hs2 = "clkgen"
+        self._default_setup()
 
         self.io.cdc_settings = 0
 
         count = 0
         if self._is_husky:
-            self.clock.clkgen_src = 'system'
-            self.clock.clkgen_freq = 7.37e6
-            self.clock.adc_mul = 4
-            while not self.clock.clkgen_locked:
-                count += 1
-                self.clock.reset_dcms()
-                if count > 10:
-                    raise OSError("Could not lock PLL. Try rerunning this function or calling scope.pll.reset(): {}".format(self))
+            if not self.clock.try_wait_clkgen_locked(10):
+                raise OSError("Could not lock PLL. Try rerunning this function or calling scope.pll.reset(): {}".format(self))
 
             # these are the power-up defaults, but just in case e.g. test script left these on:
             self.adc.test_mode = False
@@ -334,31 +321,15 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
             self.trace.capture.trigger_source = 'firmware trigger'
 
         else:
-            self.clock.adc_src = "clkgen_x4"
-            while not self.clock.clkgen_locked:
-                self.clock.reset_dcms()
-                time.sleep(0.05)
-                count += 1
+            if not self.clock.try_wait_clkgen_locked(5, 0.05):
+                scope_logger.info("Could not lock clock for scope. This is typically safe to ignore. Reconnecting and retrying...")
+                self.dis()
+                time.sleep(0.25)
+                self.con()
+                time.sleep(0.25)
+                self._default_setup()
 
-                if count == 5:
-                    scope_logger.info("Could not lock clock for scope. This is typically safe to ignore. Reconnecting and retrying...")
-                    self.dis()
-                    time.sleep(0.25)
-                    self.con()
-                    time.sleep(0.25)
-                    self.gain.db = 25
-                    self.adc.samples = 5000
-                    self.adc.offset = 0
-                    self.adc.basic_mode = "rising_edge"
-                    self.clock.clkgen_freq = 7.37e6
-                    self.trigger.triggers = "tio4"
-                    self.clock.adc_src = "clkgen_x4"
-                    self.io.tio1 = "serial_rx"
-                    self.io.tio2 = "serial_tx"
-                    self.io.hs2 = "clkgen"
-                    self.clock.adc_src = "clkgen_x4"
-
-                if count > 10:
+                if not self.clock.try_wait_clkgen_locked(5, 0.05):
                     raise OSError("Could not lock DCM. Try rerunning this function or calling scope.clock.reset_dcms(): {}".format(self))
 
     def dcmTimeout(self):
@@ -835,6 +806,25 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
             samples = self.adc.samples
         b = self._capture_read(samples)
         return a or b
+
+    def arm_and_capture(self, poll_done=False):
+        """Arms and immediately tries to captures a trigger event.
+
+        Return:
+            The return value of scope.capture()
+        """
+        self.arm()
+        return self.capture(poll_done)
+
+    def capture_and_vreset(self, poll_done=False):
+        """Captures a trigger event and then resets the VCC glitch hardware.
+
+        Return:
+            The return value of scope.capture()
+        """
+        timedout = self.capture(poll_done)
+        self.io.vglitch_reset()
+        return timedout
 
     def get_last_trace(self, as_int : bool=False) -> np.ndarray:
         """Return the last trace captured with this scope.

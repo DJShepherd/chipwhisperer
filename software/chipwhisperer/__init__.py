@@ -17,12 +17,14 @@ except Exception as e:
 import os, os.path, time
 from zipfile import ZipFile
 
+
 from .capture import scopes, targets
 from .capture.api import programmers
 from .capture import acq_patterns as key_text_patterns
 from .common.api import ProjectFormat as project
 from .common.traces import Trace
-from .common.utils import util
+from .common.utils import util, consts
+from .common.utils.looper import *
 from .capture.scopes.cwhardware.ChipWhispererSAM3Update import SAMFWLoader, get_at91_ports
 import logging
 from .logging import *

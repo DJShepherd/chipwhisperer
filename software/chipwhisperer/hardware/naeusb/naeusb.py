@@ -282,29 +282,50 @@ def _WINDOWS_USB_CHECK_DRIVER(device) -> Optional[str]:
         naeusb_logger.warning("Could not check driver ({}), assuming WINUSB is used".format(str(e)))
         return None
 
-
 def packuint32(data):
     """Converts a 32-bit integer into format expected by USB firmware"""
-
     data = int(data)
-    return [data & 0xff, (data >> 8) & 0xff, (data >> 16) & 0xff, (data >> 24) & 0xff]
+    return [ data & 0xff, (data >> 8) & 0xff, (data >> 16) & 0xff, (data >> 24) & 0xff ]
 
-def unpackuint32(buf):
+def unpackuint32(buf, i=0):
     """"Converts an array into a 32-bit integer"""
-
-    pint = buf[0]
-    pint |= buf[1] << 8
-    pint |= buf[2] << 16
-    pint |= buf[3] << 24
+    pint = buf[i]
+    pint |= buf[i + 1] << 8
+    pint |= buf[i + 2] << 16
+    pint |= buf[i + 3] << 24
     return pint
 
-def packuint16(data):
-    """Converts a 16-bit integer into format expected by USB firmware"""
-
+def pack_u32_into(buf, i, data):
+    """Converts a 32-bit integer into format expected by USB firmware into a buffer"""
     data = int(data)
+    buf[i] = data & 0xff
+    buf[i + 1] = (data >> 8) & 0xff
+    buf[i + 2] = (data >> 16) & 0xff
+    buf[i + 3] = (data >> 24) & 0xff
 
-    return [data & 0xff, (data >> 8) & 0xff, (data >> 16) & 0xff, (data >> 24) & 0xff]
+def pack_u32_bytes(data):
+    """Converts a 32-bit integer into format expected by USB firmware to a bytearray"""
+    buf = bytearray(4)
+    pack_u32_into(buf, 0, data)
+    return buf
+    
+def set_len_addr(buf, dlen, addr):
+    """Populates a buffer with the command header.
+    """
+    pack_u32_into(buf, 0, dlen)
+    pack_u32_into(buf, 4, addr)
 
+def make_len_addr(dlen, addr):
+    """Creates a command header buffer.
+
+    Return:
+        A bytearray with the populated command parameters.
+    """
+    buf = bytearray(8)
+    set_len_addr(buf, dlen, addr)
+    return buf
+
+NAEUSB_CTRL_IO_MAX = 58
 
 #List of all NewAE PID's
 NEWAE_VID = 0x2B3E
@@ -521,14 +542,13 @@ class NAEUSB_Backend:
 
         dlen = int(dlen)
 
-        if dlen < 48:
-            cmd = self.CMD_READMEM_CTRL
-        else:
+        if dlen > NAEUSB_CTRL_IO_MAX:
             cmd = self.CMD_READMEM_BULK
+        else:
+            cmd = self.CMD_READMEM_CTRL
 
         # ADDR/LEN written LSB first
-        pload = packuint32(dlen)
-        pload.extend(packuint32(addr))
+        pload = make_len_addr(dlen, addr)
         try:
             self.sendCtrl(cmd, data=pload)
         except usb1.USBErrorPipe:
@@ -553,17 +573,19 @@ class NAEUSB_Backend:
 
         dlen = len(data)
 
-        if dlen < 48:
-            cmd = self.CMD_WRITEMEM_CTRL
-        else:
+        if dlen > NAEUSB_CTRL_IO_MAX:
             cmd = self.CMD_WRITEMEM_BULK
+        else:
+            cmd = self.CMD_WRITEMEM_CTRL
 
         # ADDR/LEN written LSB first
-        pload = packuint32(dlen)
-        pload.extend(packuint32(addr))
-
         if cmd == self.CMD_WRITEMEM_CTRL:
-            pload.extend(data)
+            # TODO: Can we split this up or is it an interface limitation?
+            pload = bytearray(8 + dlen)
+            set_len_addr(pload, dlen, addr)
+            pload[8:] = data
+        else:
+            pload = make_len_addr(dlen, addr)
 
         self.sendCtrl(cmd, data=pload)
 
@@ -949,8 +971,8 @@ class NAEUSB:
         data = self.readCtrl(self.CMD_MEMSTREAM, dlen=9)
 
         status = data[0]
-        samples_left_to_stream = unpackuint32(data[1:5])
-        overflow_location = unpackuint32(data[5:9])
+        samples_left_to_stream = unpackuint32(data, 1)
+        overflow_location = unpackuint32(data, 5)
 
         if status == 0:
             unknown_overflow = False
@@ -985,11 +1007,13 @@ class NAEUSB:
         if self.streamModeCaptureStream:
             self.streamModeCaptureStream.join()
         if is_husky:
-            data=list(int.to_bytes(segment_size, length=4, byteorder='little')) + \
-                list(int.to_bytes(3, length=4, byteorder='little')) + list(int.to_bytes(dlen, length=4, byteorder="little"))
+            data = bytearray(12)
+            pack_u32_into(data, 0, segment_size)
+            pack_u32_into(data, 4, 3)
+            pack_u32_into(data, 8, dlen)
         else:
-            data = packuint32(dlen)
-        self.sendCtrl(NAEUSB.CMD_MEMSTREAM, data=bytearray(data))
+            data = pack_u32_bytes(dlen)
+        self.sendCtrl(NAEUSB.CMD_MEMSTREAM, data=data)
         if is_husky:
             self.streamModeCaptureStream = NAEUSB.StreamModeCaptureThreadHusky(self, dlen, segment_size, dbuf_temp, timeout_ms, is_husky)
         else:
