@@ -295,16 +295,118 @@ class OpenADCInterface(util.DisableNewAttr):
         if Validate:
             self.msg_validate(address, payload, read_mask=readMask)
 
+### Utility operations
+
+    def msg_get_value(self, address, i, max_resp=None):
+        """Gets a byte from the message response from the device.
+
+        Return:
+            The value of the specified byte.
+        """
+        return self.msg_read(address, max_resp=max_resp)[i]
+
+    def msg_set_value(self, address, i, value, max_resp=None):
+        """Reads a response from the device, updates a byte in the response, and writes the
+        response back.
+
+        Return:
+            The updated data that was written to the device.
+        """
+        data = self.msg_read(address, max_resp=max_resp)
+        data[i] = value
+        self.msg_write(address, data)
+        return data
+
+    def msg_extr_mask(self, address, i, mask, max_resp=None):
+        """Gets a byte from the message response and bitwise AND's a mask to it.
+
+        Return:
+            The masked value of the specified byte.
+        """
+        return self.msg_get_value(address, i, max_resp=max_resp) & mask
+
+    def msg_ins_mask(self, address, i, mask, value, max_resp=None):
+        """Reads a response from the device, bitwise NAND's a mask and bitwise OR's a value to a
+        byte, and writes the response back to the device.
+
+        Return:
+            The updated data that was written back to the device.
+        """
+        data = self.msg_read(address, max_resp=max_resp)
+        data[i] = (data[i] & ~mask) | (value & mask)
+        self.msg_write(address, data)
+        return data
+
+    def msg_extr_field(self, address, i, bfield, max_resp=None):
+        return bfield.extr_value(self.msg_get_value(i, max_resp=None))
+
+    def msg_ins_field(self, address, i, bfield, value, max_resp=None):
+        data = self.msg_read(address, max_resp=max_resp)
+        data[i] = bfield.ins_value(data[i], value)
+        self.msg_write(address, data)
+        return data
+
+    def msg_test_mask(self, address, i, mask, max_resp=None):
+        """Gets a masked byte from the message response and converts it to a bool.
+
+        Return:
+            False if the result was 0, else True.
+        """
+        return bool(self.msg_extr_mask(address, i, mask, max_resp=max_resp))
+
+    def msg_match_mask(self, address, i, mask, max_resp=None):
+        """Gets a masked byte from the message response and converts it to a bool.
+
+        Return:
+            False if the result was 0, else True.
+        """
+        return bool(self.msg_extr_mask(address, i, mask, max_resp=max_resp) == mask)
+
+    def msg_set_mask(self, address, i, mask, max_resp=None):
+        """Reads a response from the device, bitwise OR's a mask into a byte, and writes the
+        response back to the device.
+
+        Return:
+            The updated data that was written back to the device.
+        """
+        data = self.msg_read(address, max_resp=max_resp)
+        data[i] |= mask
+        self.msg_write(address, data)
+        return data
+
+    def msg_clr_mask(self, address, i, mask, max_resp=None):
+        """Reads a response from the device, bitwise NAND's a mask to a byte, and writes the
+        response back to the device.
+
+        Return:
+            The updated data that was written back to the device.
+        """
+        data = self.msg_read(address, max_resp=max_resp)
+        data[i] &= ~mask
+        self.msg_write(address, data)
+        return data
+
+    def msg_upd_mask(self, address, i, mask, set, max_resp=None):
+        """Reads a response from the device, conditionally bitwise OR's or NAND's a mask into a
+        byte, and writes the response back to the device.
+
+        Return:
+            The updated data that was written back to the device.
+        """
+        if set:
+            return self.msg_set_mask(address, i, mask, max_resp=max_resp)
+        return self.msg_clr_mask(address, i, mask, max_resp=max_resp)
+
 ### Generic
     def fpga_write(self, address, data):
         """Helper function to write FPGA registers. Intended for development/debug, not for regular use.
         """
-        return self.sendMessage(CODE_WRITE, address, data)
+        return self.msg_write(address, data)
 
     def fpga_read(self, address, num_bytes):
         """Helper function to read FPGA registers. Intended for development/debug, not for regular use.
         """
-        return self.sendMessage(CODE_READ, address, maxResp=num_bytes)
+        return self.msg_read(address, maxResp=num_bytes)
 
     def reset_fpga(self):
         """ Reset all FPGA resgiters to their defaults.
@@ -423,7 +525,6 @@ class OpenADCInterface(util.DisableNewAttr):
             raw &= 2 # clear bit 0
         self.sendMessage(CODE_WRITE, ADDR_NO_CLIP_ERRORS, [raw])
 
-
     def clip_errors_disabled(self):
         if not self._is_husky:
             raise ValueError("For CW-Husky only.")
@@ -450,6 +551,9 @@ class OpenADCInterface(util.DisableNewAttr):
         else:
             return False
 
+    def disable_clip_and_lo_gain_errors(self, disabled):
+        self.lo_gain_errors_disabled = disabled
+        self.clip_errors_disabled = disabled
 
     def numSamples(self):
         """Return the number of samples captured in one go. Returns max after resetting the hardware"""
@@ -2678,6 +2782,21 @@ class ClockSettings(util.DisableNewAttr):
         :Getter: Return whether the CLKGEN DCM is locked (True or False)
         """
         return self._getClkgenLocked()
+
+    def try_wait_clkgen_locked(self, count, delay=0):
+        """Tries to wait for clkgen to lock.
+
+        Return:
+            True if clkgen locked within the timeout, else False for a timeout.
+        """
+        while not self.clkgen_locked:
+            if count <= 0:
+                return False
+            self.reset_dcms()
+            count -= 1
+            if delay:
+                time.sleep(delay)
+        return True
 
     def _set_freqcounter_src(self, src):
         result = self.oa.sendMessage(CODE_READ, ADDR_ADVCLK, maxResp=4)
