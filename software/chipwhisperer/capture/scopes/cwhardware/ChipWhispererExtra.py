@@ -166,6 +166,10 @@ class CWExtraSettings:
 
     TCLK_OUT_BFIELD = util.BitField(2, 5)
 
+    AVR_ISP_MODE = 1 << 0
+    TGT_PWR_STATE = 1 << 1
+    TGT_PWR_SLEW = 1 << 2
+
     _name = "CW Extra Settings"
 
     def __init__(self, oa, cwtype):
@@ -525,32 +529,17 @@ class CWExtraSettings:
 
 ### Power Settings
 
-    def setAVRISPMode(self, enabled):
-        data = self.oa.sendMessage(CODE_READ, ADDR_IOROUTE, Validate=False, maxResp=8)
-        if enabled:
-            data[5] |= 0x01
-        else:
-            data[5] &= ~(0x01)
+    def set_avr_isp_mode(self, enabled):
+        return self.upd_ioroute_mask(5, self.AVR_ISP_MODE, enabled)
 
-        self.oa.sendMessage(CODE_WRITE, ADDR_IOROUTE, data)
+    def get_target_pwr_state(self):
+        return bool(self.extr_ioroute_mask(5, self.TGT_PWR_STATE))
 
-    def setTargetPowerState(self, enabled):
-        data = self.oa.sendMessage(CODE_READ, ADDR_IOROUTE, Validate=False, maxResp=8)
-        if enabled:
-            data[5] &= ~(0x02)
-        else:
-            data[5] |= (0x02)
+    def set_target_pwr_state(self, disabled):
+        return self.upd_ioroute_mask(5, self.TGT_PWR_STATE, disabled)
 
-        self.oa.sendMessage(CODE_WRITE, ADDR_IOROUTE, data)
-
-    def setTargetPowerSlew(self, fastmode):
-        data = self.oa.sendMessage(CODE_READ, ADDR_IOROUTE, Validate=False, maxResp=8)
-        if fastmode:
-            data[5] |= (0x04)
-        else:
-            data[5] &= ~(0x04)
-
-        self.oa.sendMessage(CODE_WRITE, ADDR_IOROUTE, data)
+    def set_target_pwr_slew(self, fastmode):
+        return self.upd_ioroute_mask(5, self.TGT_PWR_SLEW, fastmode)
 
     def setHuskySoftPowerOnParameters(self, pwm_cycles1, pwm_cycles2, pwm_period, pwm_off_time1, pwm_off_time2):
         """Sets the soft power-on PWM parameters.
@@ -582,12 +571,7 @@ class CWExtraSettings:
         pwm_off_time2 = int.from_bytes(raw[6:8], byteorder='little')
         return (pwm_cycles1, pwm_cycles2, pwm_period, pwm_off_time1, pwm_off_time2)
 
-    def getTargetPowerState(self):
-        data = self.oa.sendMessage(CODE_READ, ADDR_IOROUTE, Validate=False, maxResp=8)
-        if data[5] & 0x02:
-            return False
-        else:
-            return True
+### Trigger pin settings
 
     def setPin(self, enabled, pin):
         current = self.getPins()
@@ -1302,11 +1286,11 @@ class GPIOSettings(util.DisableNewAttr):
 
         :Setter: Turn the target power on or off.
         """
-        return self.cwe.getTargetPowerState()
+        return not self.cwe.get_target_pwr_state()
 
     @target_pwr.setter
     def target_pwr(self, power):
-        self.cwe.setTargetPowerState(power)
+        self.cwe.set_target_pwr_state(not power)
 
     @property
     def vcc_glitcht(self):
