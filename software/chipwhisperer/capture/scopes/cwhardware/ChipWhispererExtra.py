@@ -158,6 +158,14 @@ class CWExtraSettings:
     XIO_MODE_HIGH = _XIO_MODE_ENABLE | _XIO_MODE_STATE
     _XIO_MODE_MASK = XIO_MODE_HIGH
 
+    _CLKSRC_MASK = 3
+
+    TCLK_OUT_DISABLED = 0
+    TCLK_OUT_CLKGEN = 2
+    TCLK_OUT_GLITCH = 3
+
+    TCLK_OUT_BFIELD = util.BitField(2, 5)
+
     _name = "CW Extra Settings"
 
     def __init__(self, oa, cwtype):
@@ -418,23 +426,32 @@ class CWExtraSettings:
 
 ### Clock API
 
-    def setClockSource(self, source):
-        data = self.oa.sendMessage(CODE_READ, ADDR_EXTCLK, Validate=False, maxResp=1)
-        data[0] = (data[0] & ~0x07) | source
-        self.oa.sendMessage(CODE_WRITE, ADDR_EXTCLK, data)
+    def read_extclk(self):
+        return self.oa.msg_read(ADDR_EXTCLK, max_resp=1)[0]
 
-    def clockSource(self):
-        resp = self.oa.sendMessage(CODE_READ, ADDR_EXTCLK, Validate=False, maxResp=1)
-        return resp[0] & 0x07
+    def extr_extclk_mask(self, mask):
+        return self.oa.msg_extr_mask(ADDR_EXTCLK, 0, mask, max_resp=1)
 
-    def setTargetCLKOut(self, clkout):
-        data = self.oa.sendMessage(CODE_READ, ADDR_EXTCLK, Validate=False, maxResp=1)
-        data[0] = (data[0] & ~(3<<5)) | (clkout << 5)
-        self.oa.sendMessage(CODE_WRITE, ADDR_EXTCLK, data)
+    def ins_extclk_mask(self, mask, value):
+        self.oa.msg_ins_mask(ADDR_EXTCLK, 0, mask, value, max_resp=1)
 
-    def targetClkOut(self):
-        resp = self.oa.sendMessage(CODE_READ, ADDR_EXTCLK, Validate=False, maxResp=1)
-        return ((resp[0] & (3<<5)) >> 5)
+    def extr_extclk_field(self, bfield):
+        return self.oa.msg_extr_field(ADDR_EXTCLK, 0, bfield, max_resp=1)
+
+    def ins_extclk_field(self, bfield, value):
+        self.oa.msg_ins_field(ADDR_EXTCLK, 0, bfield, value, max_resp=1)
+
+    def get_clksrc(self):
+        return self.extr_extclk_mask(self._CLKSRC_MASK)
+
+    def set_clksrc(self, source):
+        self.ins_extclk_mask(self._CLKSRC_MASK, source)
+
+    def get_tclk_out(self):
+        return self.extr_extclk_field(self.TCLK_OUT_BFIELD)
+
+    def set_tclk_out(self, clkout):
+        self.ins_extclk_field(self.TCLK_OUT_BFIELD, clkout)
 
 ### VCC Glitch Control
 
@@ -722,11 +739,27 @@ class GPIOSettings(util.DisableNewAttr):
         }
     )
 
+    HS2_OUT_DISABLED = 0
+    HS2_OUT_CLKGEN = 1
+    HS2_OUT_GLITCH = 2
+
+    HS2_OUT_TRANSLATE = util.EnumTranslationAPI.alloc_instance(
+        (
+            CWExtraSettings.TCLK_OUT_DISABLED,
+            CWExtraSettings.TCLK_OUT_CLKGEN,
+            CWExtraSettings.TCLK_OUT_GLITCH,
+        ), (
+            'disabled',
+            'clkgen',
+            'glitch',
+        ), {
+            None : HS2_OUT_DISABLED,
+        }
+    )
+
     def __init__(self, cwextra):
         super().__init__()
         self.cwe = cwextra
-
-        self.HS2_VALID = {'disabled': 0, 'clkgen': 2, 'glitch': 3}
         self._is_husky = False
 
         self.disable_newattr()
@@ -1211,7 +1244,15 @@ class GPIOSettings(util.DisableNewAttr):
         Currently, this can only be HS1, which is the clock from the target.
         As such, this value is read-only.
         """
-        return "hs1"
+        return 'hs1'
+
+    @property
+    def hs2_mode(self):
+        mode = self.cwe.get_tclk_out()
+        value = self.HS2_OUT_TRANSLATE.try_hw_to_api(mode)
+        if not self._is_valid_hs2_mode(value):
+            raise ValueError("Hardware returned unknown HS2 mode: %02x" % mode)
+        return value
 
     @property
     def hs2(self):
@@ -1229,26 +1270,22 @@ class GPIOSettings(util.DisableNewAttr):
         Raises:
         ValueError: if new value not listed above
         """
-        mode = self.cwe.targetClkOut()
-        for k, v in self.HS2_VALID.items():
-            if mode == v:
-                if k == 'disabled':
-                    return None
-                else:
-                    return k
-
-        raise IOError("Hardware returned unknown HS2 mode: %02x" % mode)
+        mode = self.hs2_mode
+        # BACKCOMPAT: DISABLED is explicitly returned as None
+        if mode == self.HS2_OUT_DISABLED:
+            return None
+        return self.HS2_OUT_TRANSLATE.api_to_str(mode)
 
     @hs2.setter
     def hs2(self, mode):
-        if mode is None:
-            mode = 'disabled'
+        value = self.HS2_OUT_TRANSLATE.try_var_to_api(mode)
+        if not self._is_valid_hs2_mode(value):
+            raise ValueError('Invalid mode for HS2 pin: %s' % mode)
+        mode = self.HS2_OUT_TRANSLATE.api_to_hw(value)
+        self.cwe.set_tclk_out(mode)
 
-        if mode not in self.HS2_VALID:
-            raise ValueError(
-                "Unknown mode for HS2 pin: '%s'. Valid modes: [%s]" % (mode, list(self.HS2_VALID.keys())), mode)
-
-        self.cwe.setTargetCLKOut(self.HS2_VALID[mode])
+    def _is_valid_hs2_mode(self, value):
+        return self.HS2_OUT_TRANSLATE.is_valid_api(value)
 
     @property
     def target_pwr(self):

@@ -256,7 +256,7 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
             self.glitch.enabled = False
             self.adc.disable_clip_and_lo_gain_errors(False)
 
-        self.io.hs2 = 'clkgen'
+        self.io.hs2 = self.io.HS2_OUT_CLKGEN
 
     def cglitch_setup(self, default_setup=True):
         """Sets up sane defaults for clock glitching
@@ -272,7 +272,7 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
 
         self.io.vglitch_disable()
         self._glitch_default('clock_xor')
-        self.io.hs2 = 'glitch'
+        self.io.hs2 = self.io.HS2_OUT_GLITCH
 
     def vglitch_setup(self, glitcht, default_setup=True):
         """Sets up sane defaults for voltage glitch
@@ -287,7 +287,7 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
         if default_setup:
             self.default_setup()
 
-        self.io.hs2 = 'clkgen'
+        self.io.hs2 = self.io.HS2_OUT_CLKGEN
         self._glitch_default('glitch_only')
         self.io.vcc_glitcht = glitcht
 
@@ -322,7 +322,7 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
         self.io.tio1 = self.io.GPIO_MODE_SERIAL_RX
         self.io.tio2 = self.io.GPIO_MODE_SERIAL_TX
         self.io.tio4 = self.io.GPIO_MODE_HIGHZ
-        self.io.hs2 = 'clkgen'
+        self.io.hs2 = self.io.HS2_OUT_CLKGEN
 
         if self._is_husky:
             self.clock.clkgen_src = 'system'
