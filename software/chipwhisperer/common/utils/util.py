@@ -714,6 +714,9 @@ class ObjToStrTranslation(object):
     def __init__(self, str_dict):
         self._str_dict = str_dict
 
+    def api_values(self):
+        return self._str_dict.keys()
+
     def is_valid_api(self, value):
         return value in self._str_dict
 

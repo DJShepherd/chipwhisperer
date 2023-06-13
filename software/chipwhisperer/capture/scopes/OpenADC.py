@@ -318,7 +318,7 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
         self.adc.offset = 0
         self.adc.basic_mode = 'rising_edge'
         self.clock.clkgen_freq = self.DEFAULT_CLOCKGEN_FREQ
-        self.trigger.triggers = 'tio4'
+        self.trigger.set_trigger_pin_logic(self.trigger.TRIGGER_MODE_OR, self.trigger.TRIGGER_PIN_TIO4)
         self.io.tio1 = self.io.GPIO_MODE_SERIAL_RX
         self.io.tio2 = self.io.GPIO_MODE_SERIAL_TX
         self.io.tio4 = self.io.GPIO_MODE_HIGHZ

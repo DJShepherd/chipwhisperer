@@ -53,24 +53,28 @@ ADDR_SEQ_TRIG_MINMAX = 120
 ADDR_SEQ_TRIG_UART_EDGE_CHOOSER = 121
 
 class CWExtraSettings:
-    PIN_FPA = 0x01
-    PIN_TNRST = 0x02
-    PIN_RTIO1 = 0x04
-    PIN_RTIO2 = 0x08
-    PIN_RTIO3 = 0x10
-    PIN_RTIO4 = 0x20
-    MODE_OR = 0x00
-    MODE_AND = 0x01
-    MODE_NAND = 0x02
+    TRIGGER_MODE_OR = 0x00
+    TRIGGER_MODE_AND = 0x01
+    TRIGGER_MODE_NAND = 0x02
 
-    PIN_USERIO0 = 0x0100
-    PIN_USERIO1 = 0x0200
-    PIN_USERIO2 = 0x0400
-    PIN_USERIO3 = 0x0800
-    PIN_USERIO4 = 0x1000
-    PIN_USERIO5 = 0x2000
-    PIN_USERIO6 = 0x4000
-    PIN_USERIO7 = 0x8000
+    TRIGGER_PIN_FPA = 1 << 0
+    TRIGGER_PIN_NRST = 1 << 1
+    TRIGGER_PIN_TIO1 = 1 << 2
+    TRIGGER_PIN_TIO2 = 1 << 3
+    TRIGGER_PIN_TIO3 = 1 << 4
+    TRIGGER_PIN_TIO4 = 1 << 5
+
+    TRIGGER_PIN_USERIO0 = 1 << 8
+    TRIGGER_PIN_USERIO1 = 1 << 9
+    TRIGGER_PIN_USERIO2 = 1 << 10
+    TRIGGER_PIN_USERIO3 = 1 << 11
+    TRIGGER_PIN_USERIO4 = 1 << 12
+    TRIGGER_PIN_USERIO5 = 1 << 13
+    TRIGGER_PIN_USERIO6 = 1 << 14
+    TRIGGER_PIN_USERIO7 = 1 << 15
+
+    _TRIGGER_MODE_BFIELD = util.BitField(2, 6)
+    _TRIGGER_PIN_FIELD = 0xFF3F
 
     CLOCK_FPA = 0x00
     CLOCK_FPB = 0x01
@@ -571,41 +575,40 @@ class CWExtraSettings:
         pwm_off_time2 = int.from_bytes(raw[6:8], byteorder='little')
         return (pwm_cycles1, pwm_cycles2, pwm_period, pwm_off_time1, pwm_off_time2)
 
-### Trigger pin settings
+### Trigger settings
 
-    def setPin(self, enabled, pin):
-        current = self.getPins()
+    def read_trigsrc(self):
+        data = self.oa.msg_read(ADDR_TRIGSRC, max_resp=self._addr_trigsrc_size)
+        if len(data) < 2:
+            return data[0]
+        return util.unpack_u16(data, 0)
 
-        pincur = current[0] & ~(pin)
-        if enabled:
-            pincur = pincur | pin
-
-        self.setPins(pincur, current[1])
-
-    def getPin(self, pin):
-        current = self.getPins()
-        current = current[0] & pin
-        if current == 0:
-            return False
+    def write_trigsrc(self, mask):
+        data = bytearray(self._addr_trigsrc_size)
+        if self._addr_trigsrc_size > 1:
+            util.pack_u16_into(data, 0, mask)
         else:
-            return True
+            data[0] = mask
+        return self.oa.msg_write(ADDR_TRIGSRC, data)
 
-    def setPinMode(self, mode):
-        current = self.getPins()
-        self.setPins(current[0], mode)
+    def _extr_trigger_mode(self, mask):
+        return self._TRIGGER_MODE_BFIELD.extr_value(mask)
 
-    def getPinMode(self):
-        current = self.getPins()
-        return current[1]
+    def _extr_trigger_pins(self, mask):
+        return mask & self._TRIGGER_PIN_FIELD
 
-    def setPins(self, pins, mode):
-        d = list(int.to_bytes((mode << 6) | pins, length=self._addr_trigsrc_size, byteorder='little'))
-        self.oa.sendMessage(CODE_WRITE, ADDR_TRIGSRC, d, maxResp=self._addr_trigsrc_size)
+    def get_trigger_pin_logic(self):
+        mask = self.read_trigsrc()
+        return self._extr_trigger_mode(mask), self._extr_trigger_pins(mask)
 
-    def getPins(self):
-        resp = self.oa.sendMessage(CODE_READ, ADDR_TRIGSRC, Validate=False, maxResp=self._addr_trigsrc_size)
-        pins, mode = self.raw2pins(resp)
-        return(pins, mode)
+    def get_trigger_pin_mode(self):
+        return self._extr_trigger_mode(self.read_trigsrc())
+
+    def get_trigger_pins(self):
+        return self._extr_trigger_pins(self.read_trigsrc())
+
+    def set_trigger_pin_logic(self, mode, mask):
+        self.write_trigsrc(self._TRIGGER_MODE_BFIELD.make_field(mode) | (mask & self._TRIGGER_PIN_FIELD))
 
     def raw2pins(self, raw):
         pins = raw[0] & 0x3F
@@ -1377,33 +1380,106 @@ class GPIOSettings(util.DisableNewAttr):
         raise NotImplementedError()
 
 class TriggerSettings(util.DisableNewAttr):
+    TRIGGER_MODE_OR = CWExtraSettings.TRIGGER_MODE_OR
+    TRIGGER_MODE_AND = CWExtraSettings.TRIGGER_MODE_AND
+    TRIGGER_MODE_NAND = CWExtraSettings.TRIGGER_MODE_NAND
+
+    TRIGGER_MODE_TRANSLATE = util.EnumTranslationDirect.alloc_instance(
+        (
+            'OR',
+            'AND',
+            'NAND',
+        )
+    )
+
+    TRIGGER_PIN_NRST = 1 << 0
+    TRIGGER_PIN_TIO1 = 1 << 1
+    TRIGGER_PIN_TIO2 = 1 << 2
+    TRIGGER_PIN_TIO3 = 1 << 3
+    TRIGGER_PIN_TIO4 = 1 << 4
+    TRIGGER_PIN_SMA = 1 << 5
+    TRIGGER_PIN_UIO0 = 1 << 6
+    TRIGGER_PIN_UIO1 = 1 << 7
+    TRIGGER_PIN_UIO2 = 1 << 8
+    TRIGGER_PIN_UIO3 = 1 << 9
+    TRIGGER_PIN_UIO4 = 1 << 10
+    TRIGGER_PIN_UIO5 = 1 << 11
+    TRIGGER_PIN_UIO6 = 1 << 12
+    TRIGGER_PIN_UIO7 = 1 << 13
+
+    BASE_PIN_HW_MAP = {
+        TRIGGER_PIN_NRST: CWExtraSettings.TRIGGER_PIN_NRST,
+        TRIGGER_PIN_TIO1: CWExtraSettings.TRIGGER_PIN_TIO1,
+        TRIGGER_PIN_TIO2: CWExtraSettings.TRIGGER_PIN_TIO2,
+        TRIGGER_PIN_TIO3: CWExtraSettings.TRIGGER_PIN_TIO3,
+        TRIGGER_PIN_TIO4: CWExtraSettings.TRIGGER_PIN_TIO4,
+    }
+
+    BASE_PIN_STR_MAP = {
+        TRIGGER_PIN_NRST: 'nrst',
+        TRIGGER_PIN_TIO1: 'tio1',
+        TRIGGER_PIN_TIO2: 'tio2',
+        TRIGGER_PIN_TIO3: 'tio3',
+        TRIGGER_PIN_TIO4: 'tio4',
+    }
+
+    AUX_PIN_HW_MAP = {
+        TRIGGER_PIN_SMA: CWExtraSettings.TRIGGER_PIN_FPA,
+    }
+
+    AUX_PIN_STR_MAP = {
+        TRIGGER_PIN_SMA: 'sma',
+    }
+
+    AUX_PIN_STR_EXTRA = {
+        'aux': TRIGGER_PIN_SMA, # alias for Husky since it's labeled 'Aux' on the sticker
+        'fpa': TRIGGER_PIN_SMA,
+    }
+
+    UIO_PIN_HW_MAP = {
+        TRIGGER_PIN_UIO1: CWExtraSettings.TRIGGER_PIN_USERIO1,
+        TRIGGER_PIN_UIO2: CWExtraSettings.TRIGGER_PIN_USERIO2,
+        TRIGGER_PIN_UIO3: CWExtraSettings.TRIGGER_PIN_USERIO3,
+        TRIGGER_PIN_UIO4: CWExtraSettings.TRIGGER_PIN_USERIO4,
+        TRIGGER_PIN_UIO5: CWExtraSettings.TRIGGER_PIN_USERIO5,
+        TRIGGER_PIN_UIO6: CWExtraSettings.TRIGGER_PIN_USERIO6,
+        TRIGGER_PIN_UIO7: CWExtraSettings.TRIGGER_PIN_USERIO7,
+    }
+
+    UIO_PIN_STR_MAP = {
+        TRIGGER_PIN_UIO0: 'userio_d0',
+        TRIGGER_PIN_UIO1: 'userio_d1',
+        TRIGGER_PIN_UIO2: 'userio_d2',
+        TRIGGER_PIN_UIO3: 'userio_d3',
+        TRIGGER_PIN_UIO4: 'userio_d4',
+        TRIGGER_PIN_UIO5: 'userio_d5',
+        TRIGGER_PIN_UIO6: 'userio_d6',
+        TRIGGER_PIN_UIO7: 'userio_d7',
+    }
+
     def __init__(self, cwextra):
         super().__init__()
         self.cwe = cwextra
 
-        self.supported_tpins = {
-            'tio1': self.cwe.PIN_RTIO1,
-            'tio2': self.cwe.PIN_RTIO2,
-            'tio3': self.cwe.PIN_RTIO3,
-            'tio4': self.cwe.PIN_RTIO4,
-            'nrst': self.cwe.PIN_TNRST,
-        }
+        hw_map = self.BASE_PIN_HW_MAP
+        str_map = self.BASE_PIN_STR_MAP
+        extra_vars = None
 
         self.last_module = "basic"
         if self.cwe.hasAux:
-            self.supported_tpins['sma'] = self.cwe.PIN_FPA
-            self.supported_tpins['aux'] = self.cwe.PIN_FPA # alias for Husky since it's labeled 'Aux' on the sticker
+            hw_map += self.AUX_PIN_HW_MAP
+            str_map += self.AUX_PIN_STR_EXTRA
+            extra_vars = self.AUX_PIN_STR_EXTRA
 
         if self.cwe.hasUserio:
-            self.supported_tpins['userio_d0'] = self.cwe.PIN_USERIO0
-            self.supported_tpins['userio_d1'] = self.cwe.PIN_USERIO1
-            self.supported_tpins['userio_d2'] = self.cwe.PIN_USERIO2
-            self.supported_tpins['userio_d3'] = self.cwe.PIN_USERIO3
-            self.supported_tpins['userio_d4'] = self.cwe.PIN_USERIO4
-            self.supported_tpins['userio_d5'] = self.cwe.PIN_USERIO5
-            self.supported_tpins['userio_d6'] = self.cwe.PIN_USERIO6
-            self.supported_tpins['userio_d7'] = self.cwe.PIN_USERIO7
+            hw_map += self.UIO_PIN_HW_MAP
+            str_map += self.UIO_PIN_STR_MAP
 
+        self.translate_pins = util.ObjTranslationAPI.alloc_instance(
+            hw_map,
+            str_map,
+            extra_vars
+        )
 
         self._is_husky = False
 
@@ -1422,84 +1498,28 @@ class TriggerSettings(util.DisableNewAttr):
     def __str__(self):
         return self.__repr__()
 
-    def _trigger_value2string(self, pins, mode):
-        """Takes the raw programmed ADDR_TRIGSRC register value and
-        converts its meaning into a human-readable string.
+    @property
+    def _is_trace_module(self):
+        return self.module == 'trace'
 
-        Args:
-            pins, mode: as returned by getPins()
+    @property
+    def trigger_pin_logic(self):
+        self._assert_trigger()
+        mode, hw_mask = self.cwe.get_trigger_pin_logic()
+        self._assert_hw_pin_mode(mode)
+        return mode, self._hw_pins_to_api_pins(hw_mask)
 
-        Returns:
-            String describing the trigger input(s).
-        """
-        tstring = []
-        if mode == self.cwe.MODE_OR: modes = "OR"
-        elif mode ==  self.cwe.MODE_AND: modes = "AND"
-        elif mode == self.cwe.MODE_NAND: modes = "NAND"
-        else: raise IOError("Unknown mode reported by hardware: %02x" % mode)
+    @property
+    def trigger_pin_mode(self):
+        self._assert_trigger()
+        mode = self.cwe.get_trigger_pin_mode()
+        self._assert_hw_pin_mode(mode)
+        return mode
 
-        if pins & self.cwe.PIN_RTIO1:
-            tstring.append("tio1")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_RTIO2:
-            tstring.append("tio2")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_RTIO3:
-            tstring.append("tio3")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_RTIO4:
-            tstring.append("tio4")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_FPA:
-            tstring.append("sma")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_TNRST:
-            tstring.append("nrst")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_USERIO0:
-            tstring.append("userio_d0")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_USERIO1:
-            tstring.append("userio_d1")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_USERIO2:
-            tstring.append("userio_d2")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_USERIO3:
-            tstring.append("userio_d3")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_USERIO4:
-            tstring.append("userio_d4")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_USERIO5:
-            tstring.append("userio_d5")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_USERIO6:
-            tstring.append("userio_d6")
-            tstring.append(modes)
-
-        if pins & self.cwe.PIN_USERIO7:
-            tstring.append("userio_d7")
-            tstring.append(modes)
-
-        #Remove last useless combination mode
-        if len(tstring) > 1:
-            tstring = tstring[0:-1]
-
-        #Return a string indicating trigger mode
-        return " ".join(tstring)
+    @property
+    def trigger_pins(self):
+        self._assert_trigger()
+        return self._hw_pins_to_api_pins(self.cwe.get_trigger_pins())
 
     @property
     def triggers(self):
@@ -1519,7 +1539,7 @@ class TriggerSettings(util.DisableNewAttr):
         Boolean operations:
          * OR: True if any inputs are True; False if none are
          * AND: True if all inputs are True; False if any are not
-         * NAND: False if all inputs are True; True if any are not
+         * NAND: False if all inputs any True; True if all are not
 
         Note that only one boolean operation can be used over all input pins.
 
@@ -1543,80 +1563,93 @@ class TriggerSettings(util.DisableNewAttr):
         Raises:
            ValueError: if string cannot be converted to a legal mode
         """
-        return self.getTriggers()
+        #Get pin logic + combo mode
+        if self._is_trace_module:
+            return 'N/A (use scope.trace.trace_mode)'
+
+        mode, mask = self.trigger_pin_logic
+
+        pins = []
+        logic = (' %s ' % self.TRIGGER_MODE_TRANSLATE.api_to_str(mode))
+        for pin in self._api_pin_values():
+            if mask & pin:
+                pins.append(self.translate_pins.api_to_str(pin))
+
+        if (len(pins) == 1) and (mode == self.TRIGGER_MODE_NAND):
+            return 'NAND ' + pins[0]
+        return logic.join(pins)
 
     @triggers.setter
-    def triggers(self, s):
-        self.setTriggers(s)
+    def triggers(self, triggers):
+        if self._is_trace_module:
+            scope_logger.error('N/A for trace module. See scope.trace.trace_mode.')
+            return
 
-    def getTriggers(self):
-        if self._is_husky and self.sequencer_enabled:
-            message = self.getMultipleTriggers()
+        triggers = triggers.split()
+        if len(triggers) != 2:
+            mode = 0
+            mask = 0
+            for i in range(len(triggers)):
+                value = triggers[i]
+                if (i & 1) == 0:
+                    mask |= self._parse_trigger_pin(value)
+                elif i < 2:
+                    mode = self._parse_trigger_mode(value)
+                elif self._parse_trigger_mode(value) != mode:
+                    raise ValueError('Trigger logic must be the same! %s != %s' % (triggers[1], value))
         else:
-            pins, mode = self.cwe.getPins()
-            message = self._trigger_value2string(pins, mode)
-        return message
+            # Mainly looking for NAND <pin>
+            mode = self._parse_trigger_mode(triggers[0])
+            mask = self._parse_trigger_pin(triggers[1])
 
-    def _trigger_string2value(self, s):
-        """Takes human-readable trigger description and returns the
-        inputs required by setPins().
-        """
+        self.set_trigger_pin_logic(mode, mask)
 
-        s = s.lower()
+    def set_trigger_pin_logic(self, mode, pin_mask):
+        self._assert_trigger()
+        pin_mask = self._api_pins_to_hw_pins(pin_mask)
+        return self.cwe.set_trigger_pin_logic(mode, pin_mask)
 
-        #Split up string
-        triggers = s.split()
+    def _assert_trigger(self):
+        if self._is_trace_module:
+            raise TypeError('Triggers are not valid for trace module! See scope.trace.trace_mode')
 
-        #Check there is only one type of combination mode
-        triggerset = set(triggers)
-        numcombined = int('and' in triggerset) + int('or' in triggerset) + int('nand' in triggerset)
-        if numcombined > 1:
-            raise ValueError("Combining multiple triggers requires same logic between each combination", s)
+    def _is_valid_trigger_mode(self, mode):
+        return self.TRIGGER_MODE_TRANSLATE.is_valid_api(mode)
 
-        if numcombined == 0 and len(triggers) > 1:
-            raise ValueError("Detected more than 1 trigger pin specified, but no combination logic.", s)
+    def _assert_hw_pin_mode(self, mode):
+        if not self._is_valid_trigger_mode(mode):
+            raise ValueError('HW returned invalid Trigger Mode: 0x%x' % mode)
 
-        enablelogic = 0
+    def _parse_trigger_mode(self, mode):
+        value = self.TRIGGER_MODE_TRANSLATE.try_var_to_api(mode.upper())
+        if not self._is_valid_trigger_mode(value):
+            raise ValueError('Invalid trigger mode: %s' % mode)
+        return value
 
-        #Figure out enabled triggers
-        for t in list(self.supported_tpins.keys()):
-            if t in triggers:
-                if triggers.count(t) != 1:
-                    raise ValueError("Pin '%s' appears %d times, only 1 apperance supported" % (t, triggers.count(t)), s)
-                enablelogic |= self.supported_tpins[t]
+    def _parse_trigger_pin(self, pin):
+        mask = self.translate_pins.try_var_to_api(pin.lower())
+        if not self.translate_pins.is_valid_api(mask):
+            raise ValueError('Invalid trigger pin: %s' % pin)
+        return mask
 
-        #Find mode
-        if ('or' in triggerset) or (len(triggerset) == 1):
-            mode = self.cwe.MODE_OR
-            modes = "or"
-        elif 'and' in triggerset:
-            mode = self.cwe.MODE_AND
-            modes = "and"
-        elif 'nand' in triggerset:
-            mode = self.cwe.MODE_NAND
-            modes = "nand"
+    def _api_pin_values(self):
+        return self.translate_pins.api_values()
 
-        #Check mode operations in correct order, no unknown things
-        expect_tpin = True
-        for t in triggers:
-            if expect_tpin:
-                if t not in list(self.supported_tpins.keys()):
-                    raise ValueError("Error processing string at expected pin '%s'. Valid pins: %s"%(t, list(self.supported_tpins.keys())), s)
-            else:
-                if t != modes:
-                    raise ValueError("Unexpected combination mode '%s'. Expected %s."%(t, modes), s)
-            expect_tpin ^= True
+    def _api_pins_to_hw_pins(self, pin_mask):
+        hw_mask = 0
+        for pin in self._api_pin_values():
+            if pin_mask & pin:
+                hw_mask |= self.translate_pins.api_to_hw(pin)
+        return hw_mask
 
-        return (enablelogic, mode)
-
-
-    def setTriggers(self, s):
-        if self._is_husky and self.sequencer_enabled:
-            self.setMultipleTriggers(s)
-        else:
-            enablelogic, mode = self._trigger_string2value(s)
-            self.cwe.setPins(enablelogic, mode)
-
+    def _hw_pins_to_api_pins(self, hw_mask):
+        pin_mask = 0
+        for pin in self.translate_pins.hw_values():
+            if hw_mask & pin:
+                """Using None as default to cause exception if HW pin undefined. But shouldn't
+                ever happen..."""
+                pin_mask |= self.translate_pins.try_hw_to_api(pin, None)
+        return pin_mask
 
     @property
     def module(self):
@@ -1631,7 +1664,7 @@ class TriggerSettings(util.DisableNewAttr):
 
         :Getter: Returns 'basic'
         """
-        return "basic"
+        return 'basic'
 
 class ProTrigger(TriggerSettings):
     MODULE = {'basic':          0x00,
