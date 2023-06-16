@@ -236,15 +236,15 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
         if self._is_husky:
             self.adc.disable_clip_and_lo_gain_errors(True)
         else:
-            self.glitch.clk_src = 'clkgen'
+            self.glitch.clk_src = self.glitch.GLITCH_CLKSRC_CLKGEN
 
         self.glitch.output = glitch_output
-        self.glitch.trigger_src = 'ext_single'
+        self.glitch.trigger_src = self.glitch.GLITCH_TRIG_EXT_SINGLE
 
         if self._is_husky:
             self.glitch.enabled = True
             time.sleep(0.1)
-            self.glitch.clk_src = 'pll'
+            self.glitch.clk_src = self.glitch.GLITCH_CLKSRC_PLL
 
     def glitch_disable(self):
         """Disables glitch and glitch outputs
@@ -271,7 +271,7 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
             self.default_setup()
 
         self.io.vglitch_disable()
-        self._glitch_default('clock_xor')
+        self._glitch_default(self.glitch.GLITCH_OUT_CLK_XOR)
         self.io.hs2 = self.io.HS2_OUT_GLITCH
 
     def vglitch_setup(self, glitcht, default_setup=True):
@@ -288,7 +288,7 @@ class OpenADC(util.DisableNewAttr, ChipWhispererCommonInterface):
             self.default_setup()
 
         self.io.hs2 = self.io.HS2_OUT_CLKGEN
-        self._glitch_default('glitch_only')
+        self._glitch_default(self.glitch.GLITCH_OUT_GLITCH_ONLY)
         self.io.vcc_glitcht = glitcht
 
     def _recurse_scope_diff(self, string0, item0, string1, item1):
